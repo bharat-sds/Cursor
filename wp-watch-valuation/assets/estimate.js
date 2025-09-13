@@ -9,16 +9,6 @@
 		el.disabled = true;
 	}
 
-	function escapeHtml(str) {
-		if (str == null) return '';
-		return String(str)
-			.replace(/&/g, '&amp;')
-			.replace(/</g, '&lt;')
-			.replace(/>/g, '&gt;')
-			.replace(/"/g, '&quot;')
-			.replace(/'/g, '&#039;');
-	}
-
 	function getFormIdFromForm(form) {
 		if (!form || !form.id) return '';
 		var id = form.id;
@@ -32,68 +22,238 @@
 		var btn = document.createElement('button');
 		btn.type = 'button';
 		btn.textContent = text;
-		btn.className = classes || 'wpwv-estimate-btn wpforms-submit';
+		btn.className = classes || 'wpwv-estimate-btn';
 		return btn;
 	}
 
-	function getFieldValue(selector) {
-		var el = qs(document, selector);
-		if (!el) return '';
-		if (el.tagName === 'SELECT' || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
-			return el.value || '';
+	function getFieldInputByNumber(formId, fieldNumber) {
+		var input = qs(document, '#wpforms-' + formId + '-field_' + fieldNumber);
+		if (input) return input;
+		input = qs(document, '[name="wpforms[fields][' + fieldNumber + ']"]');
+		if (input) return input;
+		input = qs(document, '[name="wpforms[fields][' + fieldNumber + '][]"]');
+		return input || null;
+	}
+
+	function getFieldValueByNumber(formId, fieldNumber) {
+		var input = getFieldInputByNumber(formId, fieldNumber);
+		if (!input) return '';
+		if (input.tagName === 'SELECT' || input.tagName === 'INPUT' || input.tagName === 'TEXTAREA') {
+			return input.value || '';
 		}
 		return '';
 	}
 
-	function getCheckboxValues(selector) {
-		var nodes = qsa(document, selector + ' input[type="checkbox"]');
+	function getCheckboxValuesByNumber(formId, fieldNumber) {
+		var container = qs(document, '#wpforms-' + formId + '-field_' + fieldNumber + '-container');
+		var nodes = [];
+		if (container) {
+			nodes = qsa(container, 'input[type="checkbox"]');
+		}
+		if (!nodes.length) {
+			nodes = qsa(document, 'input[type="checkbox"][name="wpforms[fields][' + fieldNumber + '][]"]');
+		}
 		return nodes.filter(function(n){ return n.checked; }).map(function(n){ return n.value; }).join(', ');
 	}
 
-	function renderEstimate(container, valuationText, submitBtn) {
-		if (!container) return;
-		var safeValuation = escapeHtml(valuationText || '');
-		container.style.display = '';
-		container.innerHTML = "<p>Estimated valuation for your watch is " + safeValuation + ". To get in touch with our valuation expert <a href='#' role='button' style='color:#0073aa; text-decoration:underline;'>click here</a>.</p>";
-		var a = qs(container, 'a');
-		if (a) {
-			a.addEventListener('click', function(e) {
-				e.preventDefault();
-				if (submitBtn) submitBtn.click();
-			});
+	function removeOurErrors(root) {
+		qsa(root, 'em.wpforms-error[data-wpwv="1"]').forEach(function(em){
+			if (em && em.parentNode) em.parentNode.removeChild(em);
+		});
+		qsa(root, '[data-wpwv-marked="1"]').forEach(function(el){
+			el.classList.remove('wpforms-error');
+			el.removeAttribute('data-wpwv-marked');
+			el.setAttribute('aria-invalid', 'false');
+			var errId = el.getAttribute('aria-errormessage');
+			if (errId && errId.indexOf(el.id + '-error') === 0) {
+				el.removeAttribute('aria-errormessage');
+			}
+			var describedBy = (el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
+			var ours = el.id + '-error';
+			var next = describedBy.filter(function(id){ return id !== ours; }).join(' ');
+			if (next) el.setAttribute('aria-describedby', next); else el.removeAttribute('aria-describedby');
+		});
+		qsa(root, '.wpforms-has-error[data-wpwv="1"]').forEach(function(c){
+			c.classList.remove('wpforms-has-error');
+			c.removeAttribute('data-wpwv');
+		});
+	}
+
+	function appendError(containerOrAfterEl, input, message) {
+		var errId = input.id ? (input.id + '-error') : ('wpwv-error-' + Math.random().toString(36).slice(2));
+		var em = document.createElement('em');
+		em.id = errId;
+		em.className = 'wpforms-error';
+		em.setAttribute('role', 'alert');
+		em.setAttribute('aria-label', 'Error message');
+		em.setAttribute('data-wpwv', '1');
+		em.textContent = message || 'This field is required.';
+		if (containerOrAfterEl && containerOrAfterEl.classList && containerOrAfterEl.classList.contains('wpforms-field')) {
+			containerOrAfterEl.appendChild(em);
+		} else if (containerOrAfterEl && containerOrAfterEl.parentNode) {
+			containerOrAfterEl.parentNode.insertBefore(em, containerOrAfterEl.nextSibling);
+		}
+		if (input.id) {
+			input.setAttribute('aria-errormessage', errId);
+			var describedBy = (input.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
+			if (describedBy.indexOf(errId) === -1) {
+				describedBy.push(errId);
+				input.setAttribute('aria-describedby', describedBy.join(' '));
+			}
 		}
 	}
 
-	function estimate(form) {
-		var formId = (window.WPWV && WPWV.formId) ? WPWV.formId : getFormIdFromForm(form);
-		var brand     = getFieldValue('#wpforms-' + formId + '-field_1');
-		var model     = getFieldValue('#wpforms-' + formId + '-field_2');
-		var reference = getFieldValue('#wpforms-' + formId + '-field_12');
-		var year      = getFieldValue('#wpforms-' + formId + '-field_13');
-		var box       = getCheckboxValues('#wpforms-' + formId + '-field_14');
-		var papers    = getCheckboxValues('#wpforms-' + formId + '-field_15');
-		var age       = getFieldValue('#wpforms-' + formId + '-field_16');
-		var condition = getFieldValue('#wpforms-' + formId + '-field_4');
-		var source    = getFieldValue('#wpforms-' + formId + '-field_18');
+	function markInputInvalid(input, message) {
+		var container = getContainerForInput(input);
+		if (container) {
+			container.classList.add('wpforms-has-error');
+			container.setAttribute('data-wpwv', '1');
+		}
+		input.classList.add('wpforms-error');
+		input.setAttribute('data-wpwv-marked', '1');
+		input.setAttribute('aria-invalid', 'true');
+		appendError(container || input, input, message);
+	}
 
-		var container = qs(form, '#wpwv-valuation-container') || qs(document, '#wpwv-valuation-container');
+	function validateGroupContainer(container) {
+		var isCheckbox = container.classList.contains('wpforms-field-checkbox');
+		var isRadio = container.classList.contains('wpforms-field-radio');
+		if (!isCheckbox && !isRadio) return true;
+		var inputs = qsa(container, 'input[type="' + (isCheckbox ? 'checkbox' : 'radio') + '"]');
+		if (!inputs.length) return true;
+		var anyChecked = inputs.some(function(i){ return i.checked; });
+		if (anyChecked) return true;
+		var target = inputs[0];
+		markInputInvalid(target, 'This field is required.');
+		return false;
+	}
+
+	function getContainerForInput(input) {
+		if (!input) return null;
+		var byId = qs(document, '#' + input.id + '-container');
+		if (byId) return byId;
+		var closest = input.closest ? input.closest('.wpforms-field') : null;
+		return closest || input.parentNode;
+	}
+
+	function validateForm(form, formId) {
+		removeOurErrors(form);
+		var allValid = true;
+
+		qsa(form, '.wpforms-field.wpforms-field-required').forEach(function(fieldContainer){
+			var ok = validateGroupContainer(fieldContainer);
+			if (!ok) allValid = false;
+		});
+
+		var requiredInputs = qsa(form, 'input[required], select[required], textarea[required]');
+		requiredInputs.forEach(function(input){
+			if (input.type === 'checkbox' || input.type === 'radio') return;
+			var val = (input.value || '').trim();
+			if (!val) {
+				allValid = false;
+				markInputInvalid(input, 'This field is required.');
+			}
+		});
+
+		return allValid;
+	}
+
+	function scrollToFirstError(form) {
+		var first = qs(form, '[data-wpwv-marked="1"], .wpforms-has-error[data-wpwv="1"]');
+		if (!first) first = qs(form, 'em.wpforms-error[data-wpwv="1"]');
+		if (!first) return;
+		var target = first;
+		if (first.classList && first.classList.contains('wpforms-has-error')) {
+			var inside = qs(first, '[data-wpwv-marked="1"], input, select, textarea');
+			if (inside) target = inside;
+		}
+		if (typeof target.scrollIntoView === 'function') {
+			target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+		}
+		if (typeof target.focus === 'function') {
+			try { target.focus({ preventScroll: true }); } catch (e) { target.focus(); }
+		}
+	}
+
+	function renderEstimate(container, valuationText, form) {
+		if (!container) return;
+		container.innerHTML = '';
+
+		var p = document.createElement('p');
+
+		var text1 = document.createTextNode('Estimated valuation for your watch is ' + (valuationText || '') + '. ');
+		p.appendChild(text1);
+
+		var text2 = document.createTextNode('To get in touch with our valuation expert ');
+		p.appendChild(text2);
+
+		var a = document.createElement('a');
+		a.href = '#';
+		a.style.color = '#0073aa';
+		a.style.textDecoration = 'underline';
+		a.setAttribute('role', 'button');
+		a.setAttribute('tabindex', '0');
+		a.textContent = 'click here';
+		a.addEventListener('click', function(e) {
+			e.preventDefault();
+			if (!form) return;
+			var submitBtn = qs(form, 'button[type="submit"], input[type="submit"]');
+			if (submitBtn && typeof submitBtn.click === 'function') {
+				submitBtn.click();
+			} else if (typeof form.requestSubmit === 'function') {
+				form.requestSubmit();
+			} else {
+				form.submit();
+			}
+		});
+		p.appendChild(a);
+
+		p.appendChild(document.createTextNode('.'));
+
+		container.appendChild(p);
+	}
+
+	function estimate(form, estimateBtn) {
+		var formId = getFormIdFromForm(form);
+
+		var isValid = validateForm(form, formId);
+		if (!isValid) {
+			scrollToFirstError(form);
+			return;
+		}
+
+		var fields = (window.WPWV && WPWV.fields) ? WPWV.fields : {
+			brand: 1, model: 2, reference: 12, year: 13,
+			box: 14, papers: 15, age: 16, condition: 4, source: 18, valuationHidden: 20
+		};
+
+		var brand     = getFieldValueByNumber(formId, fields.brand);
+		var model     = getFieldValueByNumber(formId, fields.model);
+		var reference = getFieldValueByNumber(formId, fields.reference);
+		var year      = getFieldValueByNumber(formId, fields.year);
+		var box       = getCheckboxValuesByNumber(formId, fields.box);
+		var papers    = getCheckboxValuesByNumber(formId, fields.papers);
+		var age       = getFieldValueByNumber(formId, fields.age);
+		var condition = getFieldValueByNumber(formId, fields.condition);
+		var source    = getFieldValueByNumber(formId, fields.source);
+
+		var container = qs(form, '#wpwv-valuation-container');
 		if (!container) {
-			var submitContainerTmp = qs(form, '.wpforms-submit-container');
 			container = document.createElement('div');
 			container.id = 'wpwv-valuation-container';
-			if (submitContainerTmp && submitContainerTmp.parentNode) {
-				submitContainerTmp.parentNode.insertBefore(container, submitContainerTmp);
+			// Place just above the submit row for visibility
+			var submitContainer = qs(form, '.wpforms-submit-container');
+			if (submitContainer && submitContainer.parentNode) {
+				submitContainer.parentNode.insertBefore(container, submitContainer);
 			} else {
 				form.appendChild(container);
 			}
 		}
-		if (container) {
-			container.textContent = 'Calculating estimate…';
-		}
+		container.textContent = 'Calculating estimate…';
 
 		var formData = new FormData();
 		formData.append('action', 'wpwv_estimate_valuation');
-		formData.append('nonce', (window.WPWV && WPWV.nonce) ? WPWV.nonce : '');
+		formData.append('nonce', WPWV.nonce);
 		formData.append('brand', brand);
 		formData.append('model', model);
 		formData.append('reference', reference);
@@ -104,96 +264,55 @@
 		formData.append('condition', condition);
 		formData.append('source', source);
 
-		var submitBtn = qs(form, '#wpforms-submit-' + formId);
-
-		fetch((window.WPWV && WPWV.ajax_url) ? WPWV.ajax_url : '/wp-admin/admin-ajax.php', {
+		fetch(WPWV.ajax_url, {
 			method: 'POST',
 			credentials: 'same-origin',
-			body: formData,
+			body: formData
 		})
-		.then(function(res) { return res.json(); })
-		.then(function(json) {
-			if (!json || json.success !== true) {
-				if (container) container.textContent = 'Unable to calculate estimate right now.';
+		.then(function(res){ return res.json(); })
+		.then(function(json){
+			if (!json || !json.success) {
+				container.textContent = (json && json.data && json.data.message) ? json.data.message : 'Unable to calculate estimate right now.';
 				return;
 			}
-			renderEstimate(container, json.data.valuation, submitBtn);
+
+			var fields = (window.WPWV && WPWV.fields) ? WPWV.fields : {};
+			var hiddenInput = qs(form, '#wpforms-' + formId + '-field_' + fields.valuationHidden)
+				|| qs(form, '[name="wpforms[fields][' + fields.valuationHidden + ']"]');
+			if (hiddenInput) hiddenInput.value = json.data.valuation;
+
+			renderEstimate(container, json.data.valuation, form);
+
+			hideElement(estimateBtn);
 		})
-		.catch(function() {
-			if (container) container.textContent = 'Unable to calculate estimate right now.';
+		.catch(function(err){
+			console.error('Estimation AJAX error:', err);
+			container.textContent = 'Unable to calculate estimate right now.';
 		});
 	}
 
 	function init() {
-		var formId = '';
-		var form = qs(document, 'form.wpforms-form');
-		if (!form && window.WPWV && WPWV.formId) {
-			form = qs(document, '#wpforms-form-' + WPWV.formId);
-		}
+		if (!window.WPWV) return;
+
+		var formId = WPWV.formId || '';
+		var form = formId ? qs(document, '#wpforms-form-' + formId) : qs(document, 'form.wpforms-form');
+		if (!form) return;
+
 		formId = getFormIdFromForm(form);
-		if (!formId && window.WPWV && WPWV.formId) {
-			formId = String(WPWV.formId);
-		}
-		if (formId) {
-			window.WPWV = window.WPWV || {};
-			WPWV.formId = formId;
-		}
-		if (!form || !formId) return;
+		WPWV.formId = formId;
 
-		// Reference existing Start/Submit buttons
-		var originalSubmit = qs(form, '#wpforms-submit-' + WPWV.formId);
-		var customStartBtn = qs(form, '#wpwv-start-btn');
-		var startBtnClasses = 'wpwv-estimate-btn elementor-button elementor-size-sm';
-		if (customStartBtn && customStartBtn.className) {
-			startBtnClasses = (customStartBtn.className + ' wpwv-estimate-btn').replace(/\bwpforms-page-button\b/g, '').trim();
-		}
-		// Keep original submit visible for accessibility
-		hideElement(customStartBtn);
-
-		// Ensure a valuation container exists just above the submit container
 		var submitContainer = qs(form, '.wpforms-submit-container');
 		if (!submitContainer) return;
-		var valuationContainer = qs(form, '#wpwv-valuation-container');
-		if (!valuationContainer) {
-			valuationContainer = document.createElement('div');
-			valuationContainer.id = 'wpwv-valuation-container';
-			if (submitContainer.parentNode) {
-				submitContainer.parentNode.insertBefore(valuationContainer, submitContainer);
-			} else {
-				form.appendChild(valuationContainer);
-			}
-		}
 
-		// Insert Estimate Valuation button (match Start Valuation styles)
-		var estimateBtn = createButton('Estimate Valuation', startBtnClasses);
-		estimateBtn.removeAttribute('disabled');
-		estimateBtn.removeAttribute('aria-hidden');
-		estimateBtn.setAttribute('aria-disabled', 'false');
-		estimateBtn.style.display = '';
+		var estimateBtn = createButton('Estimate Valuation', 'wpwv-estimate-btn elementor-button elementor-size-sm wpforms-page-button');
 		submitContainer.appendChild(estimateBtn);
 
-		estimateBtn.addEventListener('click', function() {
-			estimate(form);
-		});
-	}
-
-	function bootstrap() {
-		init();
-		var observed = false;
-		if ('MutationObserver' in window && !qs(document, 'form.wpforms-form')) {
-			var mo = new MutationObserver(function() {
-				if (!observed && qs(document, 'form.wpforms-form')) {
-					observed = true;
-					init();
-				}
-			});
-			mo.observe(document.documentElement || document.body, { childList: true, subtree: true });
-		}
+		estimateBtn.addEventListener('click', function() { estimate(form, estimateBtn); });
 	}
 
 	if (document.readyState === 'loading') {
-		document.addEventListener('DOMContentLoaded', bootstrap);
+		document.addEventListener('DOMContentLoaded', init);
 	} else {
-		bootstrap();
+		init();
 	}
 })();
